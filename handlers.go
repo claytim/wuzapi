@@ -2670,19 +2670,36 @@ func (s *server) SendMessage() http.HandlerFunc {
 		}
 		// Upload the high-res thumbnail so clients render the large preview
 		// card; without these fields only the small inline thumbnail shows.
+		var mediaHandle string
 		if len(og.HQImageData) > 0 {
-			uploaded, upErr := clientManager.GetWhatsmeowClient(txtid).Upload(r.Context(), og.HQImageData, whatsmeow.MediaLinkThumbnail)
-			if upErr != nil {
-				log.Warn().Err(upErr).Str("url", url).Msg("Failed to upload link preview thumbnail, sending inline thumbnail only")
+			etm := msg.ExtendedTextMessage
+			if recipient.Server == types.NewsletterServer {
+				// Newsletter media is stored unencrypted: MediaKey/EncSHA256
+				// must be absent and the upload handle goes in the send request,
+				// otherwise clients fail to fetch the image and drop the preview.
+				uploaded, upErr := clientManager.GetWhatsmeowClient(txtid).UploadNewsletter(r.Context(), og.HQImageData, whatsmeow.MediaLinkThumbnail)
+				if upErr != nil {
+					log.Warn().Err(upErr).Str("url", url).Msg("Failed to upload link preview thumbnail, sending inline thumbnail only")
+				} else {
+					etm.ThumbnailDirectPath = proto.String(uploaded.DirectPath)
+					etm.ThumbnailSHA256 = uploaded.FileSHA256
+					etm.ThumbnailWidth = proto.Uint32(og.HQWidth)
+					etm.ThumbnailHeight = proto.Uint32(og.HQHeight)
+					mediaHandle = uploaded.Handle
+				}
 			} else {
-				etm := msg.ExtendedTextMessage
-				etm.ThumbnailDirectPath = proto.String(uploaded.DirectPath)
-				etm.ThumbnailSHA256 = uploaded.FileSHA256
-				etm.ThumbnailEncSHA256 = uploaded.FileEncSHA256
-				etm.MediaKey = uploaded.MediaKey
-				etm.MediaKeyTimestamp = proto.Int64(time.Now().Unix())
-				etm.ThumbnailWidth = proto.Uint32(og.HQWidth)
-				etm.ThumbnailHeight = proto.Uint32(og.HQHeight)
+				uploaded, upErr := clientManager.GetWhatsmeowClient(txtid).Upload(r.Context(), og.HQImageData, whatsmeow.MediaLinkThumbnail)
+				if upErr != nil {
+					log.Warn().Err(upErr).Str("url", url).Msg("Failed to upload link preview thumbnail, sending inline thumbnail only")
+				} else {
+					etm.ThumbnailDirectPath = proto.String(uploaded.DirectPath)
+					etm.ThumbnailSHA256 = uploaded.FileSHA256
+					etm.ThumbnailEncSHA256 = uploaded.FileEncSHA256
+					etm.MediaKey = uploaded.MediaKey
+					etm.MediaKeyTimestamp = proto.Int64(time.Now().Unix())
+					etm.ThumbnailWidth = proto.Uint32(og.HQWidth)
+					etm.ThumbnailHeight = proto.Uint32(og.HQHeight)
+				}
 			}
 		}
 		if t.ContextInfo.StanzaID != nil {
@@ -2721,7 +2738,7 @@ func (s *server) SendMessage() http.HandlerFunc {
 			}
 			msg.ExtendedTextMessage.ContextInfo.IsForwarded = proto.Bool(true)
 		}
-		resp, err = clientManager.GetWhatsmeowClient(txtid).SendMessage(context.Background(), recipient, msg, whatsmeow.SendRequestExtra{ID: msgid})
+		resp, err = clientManager.GetWhatsmeowClient(txtid).SendMessage(context.Background(), recipient, msg, whatsmeow.SendRequestExtra{ID: msgid, MediaHandle: mediaHandle})
 		if err != nil {
 			s.Respond(w, r, http.StatusInternalServerError, errors.New(fmt.Sprintf("error sending message: %v", err)))
 			return
